@@ -1571,6 +1571,16 @@ func (s *sendService) sendPollWithRetry(data *PollStruct, instance *instance_mod
 		}
 
 		s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] SendPoll successful on attempt %d", instance.Id, attempt)
+
+		// Guarda as opções para /polls/:id/results traduzir os hashes dos votos
+		if pollService := s.whatsmeowService.GetPollService(); pollService != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := pollService.SavePoll(ctx, instance.Id, message.Info.ID, message.Info.Chat.String(), data.Question, data.Options); err != nil {
+				s.loggerWrapper.GetLogger(instance.Id).LogError("[%s] Failed to save poll options: %v", instance.Id, err)
+			}
+			cancel()
+		}
+
 		return message, nil
 	}
 

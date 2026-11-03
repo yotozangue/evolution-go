@@ -89,7 +89,8 @@ func (h *PollHandler) GetPollResults(c *gin.Context) {
 		return
 	}
 
-	if results.TotalVotes == 0 {
+	// Enquete conhecida sem votos é um resultado válido (zero), não "não encontrada"
+	if results.TotalVotes == 0 && !results.Known {
 		h.loggerWrapper.GetLogger("poll-handler").LogInfo("[POLL] No votes found for poll %s", pollMessageID)
 		c.JSON(http.StatusNotFound, gin.H{
 			"error":   "No votes found for this poll",

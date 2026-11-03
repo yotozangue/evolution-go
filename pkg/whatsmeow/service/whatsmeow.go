@@ -1217,6 +1217,10 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 			return
 		}
 
+		// Info como veio do WhatsApp: a chave de votos de enquete é derivada do JID
+		// original do votante, então a descriptografia não pode usar o Info trocado abaixo
+		origInfo := evt.Info
+
 		// Trata o caso especial onde Sender é @lid e SenderAlt é @s.whatsapp.net
 		// Neste caso, devemos inverter: Sender e Chat devem ser @s.whatsapp.net, SenderAlt deve ser @lid
 		senderStr := evt.Info.Sender.String()
@@ -1304,68 +1308,21 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		referral := extractReferralFromMessage(evt.Message)
 
 		if evt.Message.GetPollUpdateMessage() != nil {
-			fmt.Printf("[POLL DEBUG] 🎯 PollUpdateMessage detected!\n")
-			fmt.Printf("[POLL DEBUG] � BEFORE accessing evt.Info - Sender: %s, Server: %s\n", evt.Info.Sender.String(), evt.Info.Sender.Server)
-			fmt.Printf("[POLL DEBUG] 📍 BEFORE accessing evt.Info - SenderAlt: %s\n", evt.Info.SenderAlt.String())
-			fmt.Printf("[POLL DEBUG] �� mycli.WAClient is nil: %v\n", mycli.WAClient == nil)
-			if mycli.WAClient != nil {
-				fmt.Printf("[POLL DEBUG] ✅ mycli.WAClient is initialized: %s\n", mycli.WAClient.Store.ID)
+			if pollVote := mycli.handlePollVote(evt, origInfo); pollVote != nil {
+				dataMap["pollVote"] = pollVote
 			}
+		}
 
-			decrypted, err := mycli.clientPointer[mycli.userID].DecryptPollVote(context.Background(), evt)
-			if err != nil {
-				mycli.loggerWrapper.GetLogger(mycli.userID).LogError("[%s] Failed to decrypt vote: %v", mycli.userID, err)
-			} else {
-				mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Selected options in decrypted vote:", mycli.userID)
-				for _, option := range decrypted.SelectedOptions {
-					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("- %X", option)
-
-				}
-
-				// NOVO: Salvar voto no banco de dados de forma NÃO-INVASIVA
-				if mycli.pollService != nil {
-					go func() {
-						defer func() {
-							if r := recover(); r != nil {
-								mycli.loggerWrapper.GetLogger(mycli.userID).LogError("[%s] Panic ao salvar voto: %v", mycli.userID, r)
-							}
-						}()
-
-						pollKey := evt.Message.GetPollUpdateMessage().GetPollCreationMessageKey()
-						if pollKey == nil {
-							mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn("[%s] PollCreationMessageKey not found", mycli.userID)
-							return
-						}
-
-						pollInfo := &types.MessageInfo{
-							ID: pollKey.GetID(),
-							MessageSource: types.MessageSource{
-								Chat: evt.Info.Chat, // Usar o chat do evento atual
-							},
-						}
-
-						// Construir modelo de voto usando helper seguro
-						// evt.Info já passou pelo JID swap, então Sender = número real
-						pollVote := poll_service.BuildPollVoteFromEvent(
-							pollInfo,
-							&evt.Info,
-							decrypted,
-							"", // CompanyID não disponível no MyClient, será vazio
-							mycli.Instance.Id,
-						)
-
-						// Salvar no banco com timeout de segurança
-						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-						defer cancel()
-
-						if err := mycli.pollService.SavePollVote(ctx, pollVote); err != nil {
-							mycli.loggerWrapper.GetLogger(mycli.userID).LogError("[%s] Failed to save poll vote to database: %v", mycli.userID, err)
-						} else {
-							mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Poll vote saved to database successfully", mycli.userID)
-						}
-					}()
-				}
+		if pollCreation := getPollCreation(evt.Message); pollCreation != nil && mycli.pollService != nil {
+			options := make([]string, 0, len(pollCreation.GetOptions()))
+			for _, option := range pollCreation.GetOptions() {
+				options = append(options, option.GetOptionName())
 			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := mycli.pollService.SavePoll(ctx, mycli.Instance.Id, evt.Info.ID, evt.Info.Chat.String(), pollCreation.GetName(), options); err != nil {
+				mycli.loggerWrapper.GetLogger(mycli.userID).LogError("[%s] Failed to save poll options: %v", mycli.userID, err)
+			}
+			cancel()
 		}
 
 		var quotedMessage *waE2E.Message
@@ -2914,6 +2871,88 @@ func (w *whatsmeowService) ConfirmPasskey(instanceId string) error {
 	}
 	w.passkeyCeremony.SetConfirmed(instanceId)
 	return nil
+}
+
+func getPollCreation(msg *waE2E.Message) *waE2E.PollCreationMessage {
+	switch {
+	case msg.GetPollCreationMessage() != nil:
+		return msg.GetPollCreationMessage()
+	case msg.GetPollCreationMessageV2() != nil:
+		return msg.GetPollCreationMessageV2()
+	case msg.GetPollCreationMessageV3() != nil:
+		return msg.GetPollCreationMessageV3()
+	case msg.GetPollCreationMessageV5() != nil:
+		return msg.GetPollCreationMessageV5()
+	case msg.GetPollCreationMessageV6() != nil:
+		return msg.GetPollCreationMessageV6()
+	}
+	return nil
+}
+
+// handlePollVote descriptografa o voto, salva no banco (antes do webhook sair, para
+// /polls/:id/results já refletir o voto) e devolve o resumo que vai no webhook.
+func (mycli *MyClient) handlePollVote(evt *events.Message, origInfo types.MessageInfo) map[string]interface{} {
+	logger := mycli.loggerWrapper.GetLogger(mycli.userID)
+	client := mycli.clientPointer[mycli.userID]
+	if client == nil {
+		logger.LogWarn("[%s] Poll vote received but client is not available", mycli.userID)
+		return nil
+	}
+
+	pollKey := evt.Message.GetPollUpdateMessage().GetPollCreationMessageKey()
+	if pollKey == nil {
+		logger.LogWarn("[%s] PollCreationMessageKey not found", mycli.userID)
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	origEvt := *evt
+	origEvt.Info = origInfo
+	decrypted, err := client.DecryptPollVote(ctx, &origEvt)
+	if err != nil {
+		var errSwapped error
+		decrypted, errSwapped = client.DecryptPollVote(ctx, evt)
+		if errSwapped != nil {
+			logger.LogError("[%s] Failed to decrypt vote: %v", mycli.userID, err)
+			return nil
+		}
+	}
+
+	// Normaliza o votante para o número (@s.whatsapp.net): o mesmo contato pode chegar
+	// ora como @lid, ora como número, e viraria dois votos.
+	voterInfo := evt.Info
+	if voterInfo.Sender.Server == types.HiddenUserServer {
+		if pn, err := client.Store.LIDs.GetPNForLID(ctx, voterInfo.Sender); err == nil && !pn.IsEmpty() {
+			voterInfo.Sender = pn.ToNonAD()
+		}
+	}
+
+	pollInfo := &types.MessageInfo{
+		ID: pollKey.GetID(),
+		MessageSource: types.MessageSource{
+			Chat: evt.Info.Chat,
+		},
+	}
+
+	pollVote := poll_service.BuildPollVoteFromEvent(pollInfo, &voterInfo, decrypted, "", mycli.Instance.Id)
+
+	if mycli.pollService != nil {
+		if err := mycli.pollService.SavePollVote(ctx, pollVote); err != nil {
+			logger.LogError("[%s] Failed to save poll vote to database: %v", mycli.userID, err)
+		}
+	}
+
+	summary := map[string]interface{}{
+		"pollMessageId":   pollVote.PollMessageID,
+		"voterJid":        pollVote.VoterJid,
+		"selectedOptions": pollVote.SelectedOptions,
+	}
+	if mycli.pollService != nil {
+		summary["selectedNames"] = mycli.pollService.OptionNames(ctx, mycli.Instance.Id, pollVote.PollMessageID, pollVote.SelectedOptions)
+	}
+	return summary
 }
 
 // cleanSenderID remove a parte ":numero" do sender ID para exibir apenas o remoteJid correto
