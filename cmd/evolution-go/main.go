@@ -414,7 +414,7 @@ func main() {
 	core.StartHeartbeat(heartbeatCtx, runtimeCtx, startTime)
 
 	srv := &http.Server{
-		Addr:    ":" + os.Getenv("SERVER_PORT"),
+		Addr:    os.Getenv("SERVER_HOST") + ":" + os.Getenv("SERVER_PORT"),
 		Handler: r,
 	}
 
