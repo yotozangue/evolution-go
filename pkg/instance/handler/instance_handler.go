@@ -10,6 +10,7 @@ import (
 	instance_model "github.com/evolution-foundation/evolution-go/pkg/instance/model"
 	instance_service "github.com/evolution-foundation/evolution-go/pkg/instance/service"
 	"github.com/evolution-foundation/evolution-go/pkg/utils"
+	whatsmeow_service "github.com/evolution-foundation/evolution-go/pkg/whatsmeow/service"
 )
 
 type InstanceHandler interface {
@@ -27,6 +28,9 @@ type InstanceHandler interface {
 	SetProxy(ctx *gin.Context)
 	DeleteProxy(ctx *gin.Context)
 	ForceReconnect(ctx *gin.Context)
+	ImportDevice(ctx *gin.Context)
+	ExportDevice(ctx *gin.Context)
+	ReleaseDevice(ctx *gin.Context)
 	GetLogs(ctx *gin.Context)
 	GetAdvancedSettings(ctx *gin.Context)
 	UpdateAdvancedSettings(ctx *gin.Context)
@@ -657,4 +661,70 @@ func (h *instanceHandler) UpdateAdvancedSettings(c *gin.Context) {
 
 func NewInstanceHandler(instanceService instance_service.InstanceService, config *config.Config) InstanceHandler {
 	return &instanceHandler{instanceService: instanceService, config: config}
+}
+
+// Import device
+// @Summary Import a linked device
+// @Description Grava um aparelho já vinculado (exportado de outro cliente, ex.: Evolution API) e conecta sem QR
+// @Tags Instance
+// @Accept json
+// @Produce json
+// @Param instanceId path string true "Instance Id"
+// @Param device body whatsmeow_service.DeviceKeys true "Device keys"
+// @Success 200 {object} gin.H "Device imported"
+// @Failure 400 {object} gin.H "Error on validation"
+// @Failure 500 {object} gin.H "Internal server error"
+// @Router /instance/import-device/{instanceId} [post]
+func (i *instanceHandler) ImportDevice(ctx *gin.Context) {
+	instanceId := ctx.Param("instanceId")
+
+	var data whatsmeow_service.DeviceKeys
+	if err := ctx.ShouldBindBodyWithJSON(&data); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := i.instanceService.ImportDevice(instanceId, &data); err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{"message": "success"})
+}
+
+// Export device
+// @Summary Export the linked device
+// @Description Devolve as chaves do aparelho vinculado, no formato do import-device
+// @Tags Instance
+// @Produce json
+// @Param instanceId path string true "Instance Id"
+// @Success 200 {object} gin.H "Device keys"
+// @Failure 500 {object} gin.H "Internal server error"
+// @Router /instance/export-device/{instanceId} [get]
+func (i *instanceHandler) ExportDevice(ctx *gin.Context) {
+	device, err := i.instanceService.ExportDevice(ctx.Param("instanceId"))
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{"message": "success", "data": device})
+}
+
+// Release device
+// @Summary Release the linked device
+// @Description Derruba o cliente e apaga o aparelho do store sem logout, para outro cliente assumir o número
+// @Tags Instance
+// @Produce json
+// @Param instanceId path string true "Instance Id"
+// @Success 200 {object} gin.H "Device released"
+// @Failure 500 {object} gin.H "Internal server error"
+// @Router /instance/release-device/{instanceId} [post]
+func (i *instanceHandler) ReleaseDevice(ctx *gin.Context) {
+	if err := i.instanceService.ReleaseDevice(ctx.Param("instanceId")); err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{"message": "success"})
 }

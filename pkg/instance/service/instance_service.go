@@ -41,6 +41,9 @@ type InstanceService interface {
 	SetProxyFromStruct(id string, data *SetProxyStruct) error
 	RemoveProxy(id string) error
 	ForceReconnect(instanceId string, number string) error
+	ImportDevice(instanceId string, device *whatsmeow_service.DeviceKeys) error
+	ExportDevice(instanceId string) (*whatsmeow_service.DeviceKeys, error)
+	ReleaseDevice(instanceId string) error
 	GetInstanceByToken(token string) (*instance_model.Instance, error)
 	GetLogs(instanceId string, startDate, endDate time.Time, level string, limit int) ([]logger_wrapper.LogEntry, error)
 	GetAdvancedSettings(instanceId string) (*instance_model.AdvancedSettings, error)
@@ -694,6 +697,21 @@ func (i instances) RemoveProxy(id string) error {
 	go i.Reconnect(instance)
 
 	return nil
+}
+
+// ImportDevice traz um aparelho já vinculado (de outro cliente) sem QR.
+func (i instances) ImportDevice(instanceId string, device *whatsmeow_service.DeviceKeys) error {
+	return i.whatsmeowService.ImportDevice(instanceId, device)
+}
+
+// ExportDevice devolve as chaves do aparelho para outro cliente assumir.
+func (i instances) ExportDevice(instanceId string) (*whatsmeow_service.DeviceKeys, error) {
+	return i.whatsmeowService.ExportDevice(instanceId)
+}
+
+// ReleaseDevice tira o aparelho do GO sem logout.
+func (i instances) ReleaseDevice(instanceId string) error {
+	return i.whatsmeowService.ReleaseDevice(instanceId)
 }
 
 func (i instances) ForceReconnect(instanceId string, number string) error {

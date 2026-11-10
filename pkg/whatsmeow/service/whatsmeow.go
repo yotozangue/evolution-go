@@ -55,6 +55,9 @@ type WhatsmeowService interface {
 	ConnectOnStartup(clientName string)
 	StartInstance(instanceId string) error
 	ReconnectClient(instanceId string) error
+	ImportDevice(instanceId string, device *DeviceKeys) error
+	ExportDevice(instanceId string) (*DeviceKeys, error)
+	ReleaseDevice(instanceId string) error
 	ClearInstanceCache(instanceId string, token string) error
 	CallWebhook(instance *instance_model.Instance, queueName string, jsonData []byte)
 	SendToGlobalQueues(event string, jsonData []byte, userId string)
@@ -302,7 +305,10 @@ func (w whatsmeowService) ForceUpdateJid(instanceId string, number string) error
 }
 
 var (
-	sharedContainer   *sqlstore.Container
+	sharedContainer *sqlstore.Container
+	// Mesmo pool do sharedContainer; usado onde o sqlstore não expõe a operação
+	// (ex.: gravar pre-keys com chave definida no import de aparelho).
+	sharedAuthDB      *sql.DB
 	sharedContainerMu sync.Mutex
 )
 
@@ -344,6 +350,7 @@ func (w whatsmeowService) getSharedContainer() (*sqlstore.Container, error) {
 	}
 
 	sharedContainer = container
+	sharedAuthDB = db
 	return sharedContainer, nil
 }
 
