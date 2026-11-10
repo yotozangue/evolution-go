@@ -26,6 +26,7 @@ import (
 	"github.com/skip2/go-qrcode"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
+	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/proto/waCompanionReg"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store"
@@ -1947,6 +1948,21 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		doWebhook = true
 		postMap["event"] = "CallRelayLatency"
 		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Got call relay latency %+v", mycli.userID, evt)
+	case *events.OfflineSyncPreview:
+		// O servidor só entrega as mensagens pendentes quando o cliente pede o lote
+		// (o Baileys faz o mesmo). Sem isso a fila fica presa e as mensagens novas
+		// esperam atrás dela: o aparelho envia, mas não recebe nada.
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Offline preview: %d pendentes (%d mensagens); pedindo o lote",
+			mycli.userID, evt.Total, evt.Messages)
+		go func() {
+			err := mycli.WAClient.DangerousInternals().SendNode(context.Background(), waBinary.Node{
+				Tag:     "ib",
+				Content: []waBinary.Node{{Tag: "offline_batch", Attrs: waBinary.Attrs{"count": "100"}}},
+			})
+			if err != nil {
+				mycli.loggerWrapper.GetLogger(mycli.userID).LogError("[%s] Falha ao pedir o lote offline: %v", mycli.userID, err)
+			}
+		}()
 	case *events.OfflineSyncCompleted:
 		doWebhook = true
 		postMap["event"] = "OfflineSyncCompleted"
