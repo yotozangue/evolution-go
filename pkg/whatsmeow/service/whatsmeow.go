@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/image/webp"
@@ -104,9 +105,11 @@ type whatsmeowService struct {
 }
 
 type MyClient struct {
-	service            WhatsmeowService
-	WAClient           *whatsmeow.Client
-	eventHandlerID     uint32
+	service        WhatsmeowService
+	WAClient       *whatsmeow.Client
+	eventHandlerID uint32
+	// Fim da sincronização offline (events.OfflineSyncCompleted) desde o último preview.
+	offlineSyncDone    atomic.Bool
 	userID             string
 	Instance           *instance_model.Instance
 	token              string
@@ -1954,16 +1957,25 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		// esperam atrás dela: o aparelho envia, mas não recebe nada.
 		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Offline preview: %d pendentes (%d mensagens); pedindo o lote",
 			mycli.userID, evt.Total, evt.Messages)
+		// Cada pedido traz até 100 itens; pede o próximo até o servidor avisar o fim.
+		mycli.offlineSyncDone.Store(false)
+		lotes := evt.Total/100 + 3
 		go func() {
-			err := mycli.WAClient.DangerousInternals().SendNode(context.Background(), waBinary.Node{
-				Tag:     "ib",
-				Content: []waBinary.Node{{Tag: "offline_batch", Attrs: waBinary.Attrs{"count": "100"}}},
-			})
-			if err != nil {
-				mycli.loggerWrapper.GetLogger(mycli.userID).LogError("[%s] Falha ao pedir o lote offline: %v", mycli.userID, err)
+			for i := 0; i < lotes && !mycli.offlineSyncDone.Load(); i++ {
+				err := mycli.WAClient.DangerousInternals().SendNode(context.Background(), waBinary.Node{
+					Tag:     "ib",
+					Content: []waBinary.Node{{Tag: "offline_batch", Attrs: waBinary.Attrs{"count": "100"}}},
+				})
+				if err != nil {
+					mycli.loggerWrapper.GetLogger(mycli.userID).LogError("[%s] Falha ao pedir o lote offline: %v", mycli.userID, err)
+					return
+				}
+				time.Sleep(3 * time.Second)
 			}
 		}()
 	case *events.OfflineSyncCompleted:
+		mycli.offlineSyncDone.Store(true)
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Sincronização offline concluída: %d itens", mycli.userID, evt.Count)
 		doWebhook = true
 		postMap["event"] = "OfflineSyncCompleted"
 	case *events.ConnectFailure:
