@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image/png"
 	"io"
@@ -358,6 +359,28 @@ func (w whatsmeowService) getSharedContainer() (*sqlstore.Container, error) {
 	return sharedContainer, nil
 }
 
+// conectarComRetentativa insiste na conexão de um aparelho já logado. Uma queda
+// de rede de poucos minutos não pode deixar o número fora até alguém religar à
+// mão: a espera cresce até 5 minutos e segue enquanto este cliente ainda for o
+// da instância (apagar, reconectar ou trocar a instância encerra o laço).
+func (w whatsmeowService) conectarComRetentativa(instanceId string, client *whatsmeow.Client, erro error) bool {
+	esperas := []time.Duration{5 * time.Second, 15 * time.Second, 30 * time.Second, time.Minute, 2 * time.Minute, 5 * time.Minute}
+	for tentativa := 0; ; tentativa++ {
+		espera := esperas[min(tentativa, len(esperas)-1)]
+		w.loggerWrapper.GetLogger(instanceId).LogError("[%s] Falha ao conectar (%v); nova tentativa em %s", instanceId, erro, espera)
+		time.Sleep(espera)
+		if w.clientPointer[instanceId] != client {
+			w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Instância parada ou substituída; desistindo da reconexão", instanceId)
+			return false
+		}
+		erro = client.Connect()
+		if erro == nil || errors.Is(erro, whatsmeow.ErrAlreadyConnected) {
+			w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Reconectado na tentativa %d", instanceId, tentativa+2)
+			return true
+		}
+	}
+}
+
 func (w whatsmeowService) StartClient(cd *ClientData) {
 
 	w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("Starting websocket connection to Whatsapp for user '%s'", cd.Instance.Id)
@@ -552,15 +575,7 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 		w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Already logged in with JID: %s", cd.Instance.Id, client.Store.ID.String())
 		err = client.Connect()
 		if err != nil {
-			if strings.Contains(err.Error(), "EOF") {
-				w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Erro de conexão WebSocket (EOF). Tentando reconectar em 5 segundos...", cd.Instance.Id)
-				time.Sleep(5 * time.Second)
-				err = client.Connect()
-				if err != nil {
-					w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Falha na segunda tentativa de conexão: %v", cd.Instance.Id, err)
-					return
-				}
-			} else if strings.Contains(err.Error(), "username/password authentication failed") {
+			if strings.Contains(err.Error(), "username/password authentication failed") {
 				w.loggerWrapper.GetLogger(cd.Instance.Id).LogWarn("[%s] Proxy authentication failed, attempting to connect without proxy", cd.Instance.Id)
 
 				// Desabilita o proxy
@@ -573,8 +588,7 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 					return
 				}
 				w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Successfully connected without proxy", cd.Instance.Id)
-			} else {
-				w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Failed to connect: %v", cd.Instance.Id, err)
+			} else if !w.conectarComRetentativa(cd.Instance.Id, client, err) {
 				return
 			}
 		}

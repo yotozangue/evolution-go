@@ -302,12 +302,9 @@ func (i instances) Connect(data *ConnectStruct, instance *instance_model.Instanc
 	return instance, instance.Jid, eventString, nil
 }
 
+// Reconnect derruba e sobe o cliente de novo. Não exige cliente conectado: é
+// justamente o caminho para religar uma instância que caiu e não voltou.
 func (i instances) Reconnect(instance *instance_model.Instance) error {
-	_, err := i.ensureClientConnected(instance.Id)
-	if err != nil {
-		return err
-	}
-
 	return i.whatsmeowService.ReconnectClient(instance.Id)
 }
 
