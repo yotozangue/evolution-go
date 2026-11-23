@@ -873,11 +873,11 @@ func (i instances) GetLogs(instanceId string, startDate, endDate time.Time, leve
 			continue
 		}
 
+		// O arquivo cresce em ordem cronológica: com o limite, ficam as mais
+		// recentes do período, não as primeiras lidas.
 		logs = append(logs, entry)
-
-		// Verifica o limite
-		if len(logs) >= limit {
-			break
+		if len(logs) > limit {
+			logs = logs[1:]
 		}
 	}
 
