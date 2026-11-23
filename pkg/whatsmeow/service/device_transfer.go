@@ -133,7 +133,7 @@ func (w whatsmeowService) ImportDevice(instanceId string, d *DeviceKeys) error {
 	if err != nil {
 		return err
 	}
-	container, err := w.getSharedContainer()
+	container, err := w.getAuthContainer()
 	if err != nil {
 		return err
 	}
@@ -186,7 +186,7 @@ func (w whatsmeowService) ExportDevice(instanceId string) (*DeviceKeys, error) {
 	if err != nil {
 		return nil, err
 	}
-	container, err := w.getSharedContainer()
+	container, err := w.getAuthContainer()
 	if err != nil {
 		return nil, err
 	}
@@ -253,7 +253,7 @@ func (w whatsmeowService) ReleaseDevice(instanceId string) error {
 		if err != nil {
 			return err
 		}
-		container, err := w.getSharedContainer()
+		container, err := w.getAuthContainer()
 		if err != nil {
 			return err
 		}
